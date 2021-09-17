@@ -1,11 +1,11 @@
-extern crate byteorder;
-extern crate image;
-
+use crate::map::exr::HeightmapEXR;
 use byteorder::{BigEndian, ByteOrder};
 use image::RgbaImage;
 use std::result::Result;
 
 use crate::util::to_linear_rgb;
+
+pub mod exr;
 
 // generic heightmap trait returns scalar from X and Y
 pub trait Heightmap {

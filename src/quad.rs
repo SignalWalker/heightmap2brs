@@ -1,9 +1,11 @@
-extern crate brs;
-extern crate image;
-
-use crate::map::*;
-use crate::util::*;
-use brs::*;
+use crate::map::Colormap;
+use crate::map::Heightmap;
+use crate::util::BrickType;
+use brs::Brick;
+use brs::Color;
+use brs::ColorMode;
+use brs::Direction;
+use brs::Rotation;
 
 use std::cell::RefCell;
 use std::cmp::{max, min};
@@ -103,7 +105,7 @@ impl Tile {
 
 impl QuadTree {
     // create a heightmap grid from two images
-    pub fn new(heightmap: &dyn Heightmap, colormap: &dyn Colormap) -> Self {
+    pub fn new(heightmap: &(impl Heightmap + ?Sized), colormap: &(impl Colormap + ?Sized)) -> Self {
         let (width, height) = heightmap.size();
 
         if colormap.size() != heightmap.size() {
@@ -127,7 +129,7 @@ impl QuadTree {
                         })
                         .map(|(x, y)| heightmap.at(x as u32, y as u32))
                         .fold(HashSet::new(), |mut set, height| {
-                            set.insert(height);
+                            set.insert(height as u32);
                             set
                         }),
                     size: (1, 1),
@@ -252,26 +254,37 @@ impl QuadTree {
     }
 
     // convert quadtree state into bricks
-    pub fn into_bricks(self, options: GenOptions) -> Vec<Brick> {
+    pub fn into_bricks(
+        self,
+        cull: bool,
+        vertical_scale: u32,
+        snap: bool,
+        brick_type: BrickType,
+        size: u32,
+        img: bool,
+        collision: bool,
+    ) -> Vec<Brick> {
+        let min_height = brick_type.min_height();
+        let asset_index = brick_type.asset_index();
         self.tiles
             .into_iter()
             .map(|t| {
                 let t = t.borrow();
-                if t.parent.is_some() || options.cull && (t.height == 0 || t.color[3] == 0) {
+                if t.parent.is_some() || cull && (t.height == 0 || t.color[3] == 0) {
                     return vec![];
                 }
 
-                let mut z = (options.scale * t.height) as i32;
+                let mut z = (vertical_scale * t.height) as i32;
 
                 // determine the height of this brick (difference of self and smallest neighbor)
                 let raw_height = max(
                     t.height as i32 - t.neighbors.iter().cloned().min().unwrap_or(0) as i32 + 1,
                     2,
                 );
-                let mut desired_height = max(raw_height as i32 * options.scale as i32 / 2, 2);
+                let mut desired_height = max(raw_height as i32 * vertical_scale as i32 / 2, 2);
 
                 // snap bricks to grid
-                if options.snap {
+                if snap {
                     z += 4 - z % 4;
                     desired_height += 4 - desired_height % 4;
                 }
@@ -282,30 +295,29 @@ impl QuadTree {
                 while desired_height > 0 {
                     // pick height for this brick
 
-                    let height =
-                        min(max(desired_height, if options.stud { 5 } else { 2 }), 250) as u32;
-                    let height = height + height % (if options.stud { 5 } else { 2 });
+                    let height = min(max(desired_height, min_height as i32), 250) as u32;
+                    let height = height + height % (min_height);
 
                     bricks.push(brs::Brick {
-                        asset_name_index: options.asset,
+                        asset_name_index: asset_index,
                         size: (
-                            t.size.0 * options.size,
-                            t.size.1 * options.size,
+                            t.size.0 * size,
+                            t.size.1 * size,
                             // if it's a microbrick image, just use the block size so it's cubes
-                            if options.img && options.micro {
-                                options.size
+                            if img && brick_type == BrickType::Micro {
+                                size
                             } else {
                                 height
                             },
                         ),
                         position: (
-                            ((t.center.0 * 2 + t.size.0) * options.size) as i32,
-                            ((t.center.1 * 2 + t.size.1) * options.size) as i32,
+                            ((t.center.0 * 2 + t.size.0) * size) as i32,
+                            ((t.center.1 * 2 + t.size.1) * size) as i32,
                             z as i32 - height as i32 + 2,
                         ),
                         direction: Direction::ZPositive,
                         rotation: Rotation::Deg0,
-                        collision: !options.nocollide,
+                        collision,
                         visibility: true,
                         material_index: 0,
                         color: ColorMode::Custom(Color::from_rgba(
@@ -327,9 +339,15 @@ impl QuadTree {
 
 // Generate a heightmap with brick conservation optimizations
 pub fn gen_opt_heightmap(
-    heightmap: &dyn Heightmap,
-    colormap: &dyn Colormap,
-    options: GenOptions,
+    heightmap: &(impl Heightmap + ?Sized),
+    colormap: &(impl Colormap + ?Sized),
+    cull: bool,
+    vertical_scale: u32,
+    snap: bool,
+    brick_type: BrickType,
+    size: u32,
+    img: bool,
+    collision: bool,
 ) -> Vec<Brick> {
     println!("Building initial quadtree");
     let (width, height) = heightmap.size();
@@ -339,26 +357,30 @@ pub fn gen_opt_heightmap(
     println!("Optimizing quadtree");
     let mut scale = 0;
     // loop until the bricks would be too wide or we stop optimizing bricks
-    while 2_i32.pow(scale + 1) * (options.size as i32) < 500 {
+    while 2_i32.pow(scale + 1) * (size as i32) < 500 {
         let count = quad.quad_optimize_level(scale);
         if count == 0 {
             break;
         } else {
-            println!("  Removed {:?} {}x bricks", count, 2_i32.pow(scale));
+            println!(
+                "  Removed {:?} {}x bricks",
+                count,
+                2_i32.pow(vertical_scale)
+            );
         }
         scale += 1;
     }
 
     println!("Optimizing linear");
     loop {
-        let count = quad.line_optimize(options.size);
+        let count = quad.line_optimize(size);
         if count == 0 {
             break;
         }
         println!("  Removed {} bricks", count);
     }
 
-    let bricks = quad.into_bricks(options);
+    let bricks = quad.into_bricks(cull, vertical_scale, snap, brick_type, size, img, collision);
     let brick_count = bricks.len();
     println!(
         "Reduced {} to {} ({}%; -{} bricks)",

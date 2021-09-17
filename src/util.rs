@@ -1,25 +1,57 @@
-extern crate brs;
-use brs::*;
+use brs::Color;
+use brs::ColorMode;
+use brs::Direction;
+use brs::Rotation;
+use brs::User;
+use brs::WriteData;
 use brs::{chrono::DateTime, uuid::Uuid};
 use std::ffi::OsStr;
 use std::path::Path;
+use std::str::FromStr;
 
 type Pos = (i32, i32, i32);
 type Col = [u8; 3];
 
-pub struct GenOptions {
-    pub size: u32,
-    pub scale: u32,
-    pub asset: u32,
-    pub cull: bool,
-    pub tile: bool,
-    pub micro: bool,
-    pub stud: bool,
-    pub snap: bool,
-    pub img: bool,
-    pub hdmap: bool,
-    pub lrgb: bool,
-    pub nocollide: bool,
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub enum BrickType {
+    // value = asset index
+    Basic = 0,
+    Tile = 1,
+    Micro = 2,
+    Stud = 3,
+}
+
+impl FromStr for BrickType {
+    type Err = std::io::Error;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        use std::io::ErrorKind;
+        match s.to_lowercase().as_str() {
+            "basic" => Ok(Self::Basic),
+            "tile" => Ok(Self::Tile),
+            "micro" => Ok(Self::Micro),
+            "stud" => Ok(Self::Stud),
+            _ => Err(std::io::Error::new(
+                ErrorKind::InvalidInput,
+                "unrecognized brick type",
+            )),
+        }
+    }
+}
+
+impl BrickType {
+    pub fn min_height(self) -> u32 {
+        match self {
+            Self::Basic => 2,
+            Self::Tile => 2,
+            Self::Micro => 2,
+            Self::Stud => 5,
+        }
+    }
+
+    pub fn asset_index(self) -> u32 {
+        self as u32
+    }
 }
 
 // convert gamma to linear gamma
